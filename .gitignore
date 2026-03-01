@@ -15,7 +15,7 @@ debug/
 debug/*
 
 # IDE
-# .vscode/*
+.vscode/*
 
 # Pip
 *.egg-info
@@ -31,6 +31,9 @@ exp
 
 # data
 dataset
+generated_ood_data
+maps
+metric_cache
 
 # lsf
 *.bsub
