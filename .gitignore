@@ -25,6 +25,10 @@ debug/*
 *.pkl
 *.jpg
 *.pcd
+*.json
+*.jsonl
+*.gif
+*.png
 
 # exp
 exp
@@ -34,6 +38,7 @@ dataset
 generated_ood_data
 maps
 metric_cache
+output
 
 # lsf
 *.bsub

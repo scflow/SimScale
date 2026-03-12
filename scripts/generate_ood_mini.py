@@ -66,6 +66,64 @@ def rotate_to_local(dx: float, dy: float, heading: float) -> Tuple[float, float]
     return lon, lat
 
 
+def _has_metric_cache_metadata(root: Path) -> bool:
+    metadata_dir = root / "metadata"
+    if not metadata_dir.exists() or not metadata_dir.is_dir():
+        return False
+    return any(p.suffix.lower() == ".csv" for p in metadata_dir.iterdir())
+
+
+def resolve_metric_cache_root(input_path: Path) -> Path:
+    """
+    Accept either the real cache root (.../navmini) or its parent (.../metric_cache).
+    """
+    p = input_path.expanduser().resolve()
+    if _has_metric_cache_metadata(p):
+        return p
+    if p.exists() and p.is_dir():
+        children = [c for c in p.iterdir() if c.is_dir()]
+        matched = [c for c in children if _has_metric_cache_metadata(c)]
+        if len(matched) == 1:
+            return matched[0]
+        if len(matched) > 1:
+            raise RuntimeError(
+                f"Multiple metric cache roots found under {p}: {matched}. "
+                "Please pass one explicit root containing metadata/*.csv."
+            )
+    raise RuntimeError(
+        f"Invalid --metric-cache-path: {input_path}. "
+        "Expected a directory containing metadata/*.csv (e.g. metric_cache/navmini)."
+    )
+
+
+def build_metric_cache_loader(cache_root: Path) -> MetricCacheLoader:
+    """
+    Handle stale absolute paths inside metadata by rebuilding token->path mapping from local files.
+    """
+    loader = MetricCacheLoader(cache_root)
+    missing_tokens = [token for token, file_path in loader.metric_cache_paths.items() if not Path(file_path).exists()]
+    if not missing_tokens:
+        return loader
+
+    local_index: Dict[str, str] = {}
+    for metric_file in cache_root.rglob("metric_cache.pkl"):
+        local_index[metric_file.parent.name] = str(metric_file)
+
+    patched = 0
+    for token in missing_tokens:
+        local_path = local_index.get(token)
+        if local_path is not None:
+            loader.metric_cache_paths[token] = local_path
+            patched += 1
+
+    if patched > 0:
+        print(
+            f"[info] metric cache metadata contained stale absolute paths; "
+            f"patched {patched}/{len(missing_tokens)} token paths from local index."
+        )
+    return loader
+
+
 @dataclass
 class Thresholds:
     max_abs_lon_m: float = 20.0
@@ -74,6 +132,9 @@ class Thresholds:
     max_abs_accel_mps2: float = 6.0
     max_abs_steer_deg: float = 60.0
     min_progress: float = 0.5
+    max_join_translation_m: float = 1.0
+    max_join_heading_deg: float = 8.0
+    max_join_speed_delta_mps: float = 2.0
 
 
 def build_reactive_policy(
@@ -129,13 +190,18 @@ def build_expert_planner(
     )
 
 
-def build_planner_initialization(metric_cache: MetricCache, mission_goal: StateSE2 = StateSE2(0.0, 0.0, 0.0)) -> PlannerInitialization:
+def build_planner_initialization(
+    metric_cache: MetricCache,
+    mission_goal: StateSE2 = StateSE2(0.0, 0.0, 0.0),
+    map_root_override: Optional[str] = None,
+) -> PlannerInitialization:
     """
     Infer route roadblocks from route lane IDs so we can initialize PDM-Closed
     without loading full Scene objects.
     """
     map_params = metric_cache.map_parameters
-    map_api = get_maps_api(map_params.map_root, map_params.map_version, map_params.map_name)
+    map_root = map_root_override if map_root_override is not None else map_params.map_root
+    map_api = get_maps_api(map_root, map_params.map_version, map_params.map_name)
 
     roadblock_ids: List[str] = []
     seen = set()
@@ -271,6 +337,42 @@ def pass_strict_gate(score: Dict[str, float], thresholds: Thresholds) -> bool:
     )
 
 
+def pass_join_continuity_gate(
+    phase1_states: np.ndarray,
+    rescue_states: np.ndarray,
+    thresholds: Thresholds,
+) -> bool:
+    """
+    Ensure stage stitching is dynamically smooth enough.
+    We check the first propagated rescue step against the last perturb step.
+    """
+    if len(phase1_states) == 0 or len(rescue_states) < 2:
+        return False
+
+    prev = phase1_states[-1]
+    nxt = rescue_states[1]
+
+    dx = float(nxt[StateIndex.X] - prev[StateIndex.X])
+    dy = float(nxt[StateIndex.Y] - prev[StateIndex.Y])
+    translation = math.hypot(dx, dy)
+
+    dh = abs(
+        math.degrees(
+            normalize_angle(float(nxt[StateIndex.HEADING] - prev[StateIndex.HEADING]))
+        )
+    )
+
+    prev_speed = math.hypot(float(prev[StateIndex.VELOCITY_X]), float(prev[StateIndex.VELOCITY_Y]))
+    nxt_speed = math.hypot(float(nxt[StateIndex.VELOCITY_X]), float(nxt[StateIndex.VELOCITY_Y]))
+    speed_delta = abs(nxt_speed - prev_speed)
+
+    return (
+        translation <= thresholds.max_join_translation_m
+        and dh <= thresholds.max_join_heading_deg
+        and speed_delta <= thresholds.max_join_speed_delta_mps
+    )
+
+
 def build_stage2_metric_cache(
     metric_cache: MetricCache,
     ego_state_ood,
@@ -281,7 +383,10 @@ def build_stage2_metric_cache(
     stage2_cache = copy.copy(metric_cache)
     stage2_cache.ego_state = ego_state_ood
     stage2_cache.current_tracked_objects = [current_tracks]
-    stage2_cache.future_tracked_objects = [current_tracks for _ in range(proposal_sampling.num_poses)]
+    # Deep-copy per frame to avoid aliasing mutable detections across the horizon.
+    stage2_cache.future_tracked_objects = [
+        copy.deepcopy(current_tracks) for _ in range(proposal_sampling.num_poses)
+    ]
     return stage2_cache
 
 
@@ -321,6 +426,7 @@ def serialize_trace(
                         "heading": float(obj.center.heading),
                         "width": float(obj.box.width),
                         "length": float(obj.box.length),
+                        "height": float(obj.box.height),
                     }
                 )
 
@@ -361,6 +467,7 @@ def run_for_token(
     max_candidate_trials: int,
     rng: np.random.Generator,
     verbose: bool,
+    map_root_override: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Try to generate one valid OOD trace for one token."""
     if metric_cache.human_trajectory is None:
@@ -368,10 +475,15 @@ def run_for_token(
             print(f"[{token}] skip: human_trajectory is None.")
         return None
 
+    if map_root_override is not None:
+        metric_cache.map_parameters.map_root = map_root_override
+
     scorer_cfg = PDMScorerConfig(human_penalty_filter=False)
     scorer = PDMScorer(proposal_sampling=proposal_sampling, config=scorer_cfg)
 
-    planner_init = build_planner_initialization(metric_cache)
+    planner_init = build_planner_initialization(
+        metric_cache, map_root_override=map_root_override
+    )
     expert_planner = build_expert_planner(proposal_sampling=proposal_sampling)
 
     vocab_size = len(vocab)
@@ -433,6 +545,8 @@ def run_for_token(
             rescue_states = get_trajectory_as_array(
                 rescue_traj, proposal_sampling, start_time=ood_ego_state.time_point
             )
+            if not pass_join_continuity_gate(phase1_states, rescue_states, thresholds):
+                continue
 
             # 5) Reactive rollout for rescue segment (T+H -> T+2H)
             stage2_cache = build_stage2_metric_cache(
@@ -490,6 +604,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-abs-accel-mps2", type=float, default=6.0)
     parser.add_argument("--max-abs-steer-deg", type=float, default=60.0)
     parser.add_argument("--min-progress", type=float, default=0.5)
+    parser.add_argument(
+        "--max-join-translation-m",
+        type=float,
+        default=1.0,
+        help="Max allowed position jump at stage join (phase1[-1] -> rescue[1]).",
+    )
+    parser.add_argument(
+        "--max-join-heading-deg",
+        type=float,
+        default=8.0,
+        help="Max allowed heading jump at stage join (degrees).",
+    )
+    parser.add_argument(
+        "--max-join-speed-delta-mps",
+        type=float,
+        default=2.0,
+        help="Max allowed speed jump at stage join (m/s).",
+    )
     parser.add_argument("--map-root-override", type=str, default=None, help="Optional map root override for IDM.")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -499,10 +631,9 @@ def main() -> None:
     args = parse_args()
     rng = np.random.default_rng(args.seed)
 
-    if not args.metric_cache_path.exists():
-        raise FileNotFoundError(f"metric cache path does not exist: {args.metric_cache_path}")
     if not args.vocab_path.exists():
         raise FileNotFoundError(f"vocab path does not exist: {args.vocab_path}")
+    cache_root = resolve_metric_cache_root(args.metric_cache_path)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -526,9 +657,12 @@ def main() -> None:
         max_abs_accel_mps2=args.max_abs_accel_mps2,
         max_abs_steer_deg=args.max_abs_steer_deg,
         min_progress=args.min_progress,
+        max_join_translation_m=args.max_join_translation_m,
+        max_join_heading_deg=args.max_join_heading_deg,
+        max_join_speed_delta_mps=args.max_join_speed_delta_mps,
     )
 
-    metric_cache_loader = MetricCacheLoader(args.metric_cache_path)
+    metric_cache_loader = build_metric_cache_loader(cache_root)
     tokens = list(metric_cache_loader.tokens)
     if args.max_scenes is not None:
         tokens = tokens[: args.max_scenes]
@@ -539,7 +673,7 @@ def main() -> None:
     )
 
     print(f"Loaded vocab: {args.vocab_path} shape={vocab.shape}")
-    print(f"Processing {len(tokens)} scene tokens from {args.metric_cache_path}")
+    print(f"Processing {len(tokens)} scene tokens from {cache_root}")
     saved = 0
     failed = 0
 
@@ -560,6 +694,7 @@ def main() -> None:
                 max_candidate_trials=args.max_candidate_trials,
                 rng=rng,
                 verbose=args.verbose,
+                map_root_override=args.map_root_override,
             )
             if trace is None:
                 failed += 1
