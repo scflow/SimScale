@@ -19,7 +19,7 @@ from nuplan.planning.utils.multithreading.worker_utils import worker_map
 from omegaconf import DictConfig
 
 from navsim.agents.abstract_agent import AbstractAgent
-from navsim.common.dataclasses import PDMResults, SensorConfig
+from navsim.common.dataclasses import PDMResults, SensorConfig, Trajectory
 from navsim.common.dataloader import MetricCacheLoader, SceneFilter, SceneLoader
 from navsim.common.enums import SceneFrameType
 from navsim.evaluate.pdm_score import pdm_score
@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = "config/pdm_scoring"
 CONFIG_NAME = "default_run_pdm_score"
+
+
+def _extract_trajectory(agent_output) -> Trajectory:
+    if isinstance(agent_output, Trajectory):
+        return agent_output
+    if isinstance(agent_output, dict) and "trajectory" in agent_output:
+        return agent_output["trajectory"]
+    raise TypeError(f"Unsupported agent output type: {type(agent_output)!r}")
 
 
 def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[pd.DataFrame]:
@@ -93,8 +101,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
                 trajectory = agent.compute_trajectory(agent_input, scene)
             else:
                 trajectory = agent.compute_trajectory(agent_input)
-            
-            trajectory = trajectory["trajectory"] # NOTE
+            trajectory = _extract_trajectory(trajectory)
 
             score_row_stage_one, ego_simulated_states = pdm_score(
                 metric_cache=metric_cache,
@@ -149,8 +156,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[p
                 trajectory = agent.compute_trajectory(agent_input, scene)
             else:
                 trajectory = agent.compute_trajectory(agent_input)
-            
-            trajectory = trajectory["trajectory"]  # NOTE
+            trajectory = _extract_trajectory(trajectory)
 
             score_row_stage_two, ego_simulated_states = pdm_score(
                 metric_cache=metric_cache,

@@ -1,0 +1,6 @@
+reactive:
+  _target_: navsim.traffic_agents_policies.mobil_traffic_agents.MobilTrafficAgentsPolicy
+  _convert_: 'all'
+
+  lane_change_duration: 3.0
+
