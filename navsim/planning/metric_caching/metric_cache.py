@@ -9,6 +9,7 @@ from typing import List, Optional
 from nuplan.common.actor_state.ego_state import EgoState
 from nuplan.common.actor_state.state_representation import TimePoint
 from nuplan.common.utils.io_utils import save_buffer
+from nuplan.common.maps.maps_datatypes import TrafficLightStatusData
 from nuplan.planning.simulation.observation.observation_type import DetectionsTracks
 from nuplan.planning.simulation.trajectory.interpolated_trajectory import InterpolatedTrajectory
 
@@ -49,6 +50,7 @@ class MetricCache:
     future_tracked_objects: List[DetectionsTracks]  # interpolated at 10Hz
 
     map_parameters: MapParameters
+    traffic_light_status: Optional[List[List[TrafficLightStatusData]]] = None
 
     def dump(self) -> None:
         """Dump metric cache to pickle with lzma compression."""

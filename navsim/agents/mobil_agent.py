@@ -8,7 +8,7 @@ from navsim.agents.abstract_agent import AbstractAgent
 from navsim.behavior.idm import IDM, IDMParams
 from navsim.behavior.lane_change_trajectory import rollout_ego_trajectory
 from navsim.behavior.mobil import MobilModel, MobilParams, decide_with_mobil
-from navsim.behavior.scene_adapter import build_ego_actor_from_scene, build_neighbor_set
+from navsim.behavior.scene_adapter import build_ego_actor_and_route_from_scene, build_neighbor_set
 from navsim.common.dataclasses import AgentInput, Scene, SensorConfig, Trajectory
 
 
@@ -45,7 +45,7 @@ class MobilAgent(AbstractAgent):
         if scene is None:
             raise ValueError("MobilAgent requires the privileged Scene input.")
 
-        ego_actor, actors, route_roadblock_ids = build_ego_actor_from_scene(scene)
+        ego_actor, actors, route_lane_ids, route_roadblock_ids = build_ego_actor_and_route_from_scene(scene)
         neighbors = build_neighbor_set(ego_actor, actors)
         route_command = agent_input.ego_statuses[-1].driving_command if agent_input.ego_statuses else None
         action, acceleration, target_lane = decide_with_mobil(
@@ -64,7 +64,7 @@ class MobilAgent(AbstractAgent):
             target_lane=target_lane,
             acceleration=acceleration,
             trajectory_sampling=self._trajectory_sampling,
+            route_lane_ids=route_lane_ids,
             route_roadblock_ids=route_roadblock_ids,
             lane_change_duration=self._lane_change_duration,
         )
-

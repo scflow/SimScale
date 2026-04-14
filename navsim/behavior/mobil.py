@@ -119,10 +119,13 @@ def decide_with_mobil(
     idm: IDM,
     mobil: MobilModel,
     lane_change_allowed: bool = True,
+    acceleration_caps: Optional[dict[str, float]] = None,
 ) -> tuple[str, float, Optional[object]]:
     """Return action, longitudinal acceleration, and target lane object."""
 
     a_keep = _idm_accel_with_lead(actor, neighbors.curr_front, idm)
+    if acceleration_caps is not None:
+        a_keep = min(a_keep, acceleration_caps.get(KEEP, np.inf))
     scores = {KEEP: 0.0}
     outputs = {KEEP: (a_keep, actor.lane_object)}
 
@@ -140,6 +143,8 @@ def decide_with_mobil(
 
         ego_now = a_keep
         ego_after = _idm_accel_on_lane(actor, front, target_lane, idm)
+        if acceleration_caps is not None:
+            ego_after = min(ego_after, acceleration_caps.get(action, np.inf))
 
         new_rear_now = _idm_accel_on_lane(rear, front, target_lane, idm) if rear is not None else 0.0
         new_rear_after = _idm_accel_on_lane(rear, actor, target_lane, idm) if rear is not None else 0.0
@@ -169,4 +174,3 @@ def decide_with_mobil(
     best = mobil.decide(scores)
     acceleration, target_lane = outputs[best]
     return best, acceleration, target_lane
-

@@ -3,4 +3,8 @@ reactive:
   _convert_: 'all'
 
   lane_change_duration: 3.0
-
+  open_loop_detections_types: ["PEDESTRIAN", "BICYCLE", "BARRIER", "CZONE_SIGN", "TRAFFIC_CONE", "GENERIC_OBJECT"]
+  stop_line_min_gap: 3.0
+  open_loop_min_gap: 2.0
+  open_loop_path_buffer: 2.5
+  max_stop_brake: 6.0

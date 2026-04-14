@@ -23,11 +23,18 @@ def smoothstep(values: np.ndarray) -> np.ndarray:
 
 def _pick_outgoing_lane(
     lane_object: LaneGraphEdgeMapObject,
+    route_lane_ids: list[str],
     route_roadblock_ids: list[str],
 ) -> Optional[LaneGraphEdgeMapObject]:
     outgoing = list(lane_object.outgoing_edges)
     if not outgoing:
         return None
+
+    if route_lane_ids:
+        for lane_id in route_lane_ids:
+            lane_matches = [candidate for candidate in outgoing if candidate.id == lane_id]
+            if lane_matches:
+                return lane_matches[0]
 
     if route_roadblock_ids:
         for roadblock_id in route_roadblock_ids:
@@ -40,6 +47,7 @@ def _pick_outgoing_lane(
 
 def build_lane_path(
     lane_object: Optional[LaneGraphEdgeMapObject],
+    route_lane_ids: list[str],
     route_roadblock_ids: list[str],
     min_length: float,
 ) -> Optional[PDMPath]:
@@ -56,7 +64,7 @@ def build_lane_path(
             path_length = PDMPath(discrete_path).length
             if path_length >= min_length:
                 break
-        current_lane = _pick_outgoing_lane(current_lane, route_roadblock_ids)
+        current_lane = _pick_outgoing_lane(current_lane, route_lane_ids, route_roadblock_ids)
 
     if len(discrete_path) < 2:
         return None
@@ -78,6 +86,7 @@ def rollout_absolute_states(
     times: np.ndarray,
     lane_change_duration: float,
     lane_change_elapsed: float,
+    route_lane_ids: list[str],
     route_roadblock_ids: list[str],
 ) -> np.ndarray:
     if current_lane is None:
@@ -90,7 +99,7 @@ def rollout_absolute_states(
         return np.stack([x, y, headings], axis=-1)
 
     max_distance = max(actor.speed * float(times[-1]) + 0.5 * abs(acceleration) * float(times[-1]) ** 2 + 30.0, 40.0)
-    current_path = build_lane_path(current_lane, route_roadblock_ids, max_distance)
+    current_path = build_lane_path(current_lane, route_lane_ids, route_roadblock_ids, max_distance)
     if current_path is None:
         x = actor.x + np.cos(actor.heading) * (actor.speed * times + 0.5 * acceleration * times**2)
         y = actor.y + np.sin(actor.heading) * (actor.speed * times + 0.5 * acceleration * times**2)
@@ -104,7 +113,7 @@ def rollout_absolute_states(
     if target_lane is None or target_lane.id == current_lane.id:
         return source_states
 
-    target_path = build_lane_path(target_lane, route_roadblock_ids, max_distance)
+    target_path = build_lane_path(target_lane, route_lane_ids, route_roadblock_ids, max_distance)
     if target_path is None:
         return source_states
 
@@ -126,6 +135,7 @@ def rollout_ego_trajectory(
     target_lane: Optional[LaneGraphEdgeMapObject],
     acceleration: float,
     trajectory_sampling: TrajectorySampling,
+    route_lane_ids: list[str],
     route_roadblock_ids: list[str],
     lane_change_duration: float,
 ) -> Trajectory:
@@ -138,6 +148,7 @@ def rollout_ego_trajectory(
         times=times,
         lane_change_duration=lane_change_duration,
         lane_change_elapsed=0.0,
+        route_lane_ids=route_lane_ids,
         route_roadblock_ids=route_roadblock_ids,
     )
     relative_states = convert_absolute_to_relative_se2_array(
@@ -154,6 +165,7 @@ def propagate_actor(
     target_lane: Optional[LaneGraphEdgeMapObject],
     acceleration: float,
     dt: float,
+    route_lane_ids: list[str],
     route_roadblock_ids: list[str],
     lane_change_duration: float,
     lane_change_elapsed: float,
@@ -166,6 +178,7 @@ def propagate_actor(
         times=np.array([dt], dtype=np.float64),
         lane_change_duration=lane_change_duration,
         lane_change_elapsed=lane_change_elapsed,
+        route_lane_ids=route_lane_ids,
         route_roadblock_ids=route_roadblock_ids,
     )[0]
     next_speed = max(0.0, actor.speed + acceleration * dt)
@@ -185,4 +198,3 @@ def propagate_actor(
     )
     next_elapsed = min(lane_change_duration, lane_change_elapsed + dt) if target_lane is not None else 0.0
     return next_actor, next_elapsed
-

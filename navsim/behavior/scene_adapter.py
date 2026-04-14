@@ -253,6 +253,24 @@ def build_ego_actor_from_scene(scene: Scene) -> tuple[ActorState, list[ActorStat
     return ego_actor, actors, list(current_frame.roadblock_ids)
 
 
+def build_ego_actor_and_route_from_scene(
+    scene: Scene,
+) -> tuple[ActorState, list[ActorState], list[str], list[str]]:
+    ego_actor, actors, route_roadblock_ids = build_ego_actor_from_scene(scene)
+
+    route_lane_ids: list[str] = []
+    if scene.map_api is not None:
+        for roadblock_id in route_roadblock_ids:
+            roadblock = scene.map_api.get_map_object(roadblock_id, SemanticMapLayer.ROADBLOCK)
+            roadblock = roadblock or scene.map_api.get_map_object(roadblock_id, SemanticMapLayer.ROADBLOCK_CONNECTOR)
+            if roadblock is None:
+                continue
+            for lane in roadblock.interior_edges:
+                route_lane_ids.append(lane.id)
+
+    return ego_actor, actors, route_lane_ids, route_roadblock_ids
+
+
 def build_actor_from_detection_track(track, map_api: Optional[AbstractMap]) -> ActorState:
     velocity_x = float(track.velocity.x)
     velocity_y = float(track.velocity.y)
@@ -290,4 +308,3 @@ def build_ego_actor_from_ego_state(ego_state: EgoState, map_api: Optional[Abstra
         token="ego",
         lane_object=select_best_lane(map_api, float(center.x), float(center.y), float(center.heading)),
     )
-

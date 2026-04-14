@@ -358,6 +358,7 @@ class MetricCacheProcessor:
             centerline=self._pdm_closed._centerline,
             route_lane_ids=list(self._pdm_closed._route_lane_dict.keys()),
             drivable_area_map=self._pdm_closed._drivable_area_map,
+            traffic_light_status=interpolated_traffic_light_status,
             past_detections_tracks=[
                 dt for dt in scenario.get_past_tracked_objects(iteration=0, time_horizon=1.5, num_samples=3)
             ][:-1],

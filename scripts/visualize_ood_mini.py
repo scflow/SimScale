@@ -263,12 +263,18 @@ def load_trace(path: Path) -> TraceDict:
 
 
 def validate_trace(trace: TraceDict, path: Path) -> None:
-    required_keys = {"token", "num_frames", "frames", "stage1_score"}
+    required_keys = {"token", "num_frames", "frames"}
     missing = required_keys - set(trace.keys())
     if missing:
         raise ValueError(f"{path}: missing keys {sorted(missing)}")
     if not isinstance(trace["frames"], list) or len(trace["frames"]) == 0:
         raise ValueError(f"{path}: frames must be a non-empty list")
+    has_ood_scores = "stage1_score" in trace
+    has_collision_scores = "nominal_metrics" in trace and "attacked_metrics" in trace
+    if not has_ood_scores and not has_collision_scores:
+        raise ValueError(
+            f"{path}: expected either stage1/stage2 scores or nominal/attacked collision metrics"
+        )
 
 
 def infer_split_index(num_frames: int) -> int:
@@ -430,7 +436,38 @@ def build_diagnostic_lines(trace: TraceDict, manifest_meta: Optional[Dict[str, A
             f"recovery={_sf(lt.get('recovery_score')):.3f}, "
             f"cont={_sf(lt.get('continuity_score')):.3f}"
         )
+
+    attack_spec = merged.get("attack_spec")
+    if isinstance(attack_spec, dict):
+        lines.append(
+            "attack: "
+            f"mode={attack_spec.get('mode')}, "
+            f"actor={attack_spec.get('actor_token')}, "
+            f"start={_sf(attack_spec.get('start_time_s')):.2f}s"
+        )
+    if "risk_gain" in merged:
+        lines.append(f"risk_gain={_sf(merged.get('risk_gain')):.3f}")
+    if "nominal_min_dist_m" in merged or "attacked_min_dist_m" in merged:
+        lines.append(
+            "min_dist: "
+            f"nominal={_sf(merged.get('nominal_min_dist_m')):.2f}m, "
+            f"attacked={_sf(merged.get('attacked_min_dist_m')):.2f}m"
+        )
     return lines
+
+
+def get_score_sections(trace: TraceDict) -> Tuple[str, Dict[str, float], str, Dict[str, float]]:
+    stage1_score = trace.get("stage1_score")
+    stage2_score = trace.get("stage2_score")
+    if isinstance(stage1_score, dict) or isinstance(stage2_score, dict):
+        return "Stage1", dict(stage1_score or {}), "Stage2", dict(stage2_score or {})
+
+    nominal_metrics = trace.get("nominal_metrics")
+    attacked_metrics = trace.get("attacked_metrics")
+    if isinstance(nominal_metrics, dict) or isinstance(attacked_metrics, dict):
+        return "Nominal", dict(nominal_metrics or {}), "Attacked", dict(attacked_metrics or {})
+
+    return "Stage1", {}, "Stage2", {}
 
 
 def normalize_angle(angle: float) -> float:
@@ -456,7 +493,10 @@ def trace_to_series(
 ) -> Tuple[List[Point2D], List[float], List[List[Dict[str, Any]]], List[List[Point2D]]]:
     frames = trace["frames"]
     ego_points_global = [(float(f["ego"]["x"]), float(f["ego"]["y"])) for f in frames]
-    ego_speed = [float(f["ego"]["velocity"]) for f in frames]
+    ego_speed = [
+        float(f["ego"].get("velocity", f["ego"].get("speed", 0.0)))
+        for f in frames
+    ]
     all_vehicles = [f.get("vehicles", []) for f in frames]
 
     if use_global_frame:
@@ -1301,8 +1341,9 @@ def render_static_figure(
     )
     ax_bev.legend(loc="upper left", fontsize=8)
 
-    score_line_1 = f"Stage1: {score_text(trace.get('stage1_score', {}))}"
-    score_line_2 = f"Stage2: {score_text(trace.get('stage2_score', {}))}"
+    score_label_1, score_data_1, score_label_2, score_data_2 = get_score_sections(trace)
+    score_line_1 = f"{score_label_1}: {score_text(score_data_1)}"
+    score_line_2 = f"{score_label_2}: {score_text(score_data_2)}"
     diagnostic_lines = build_diagnostic_lines(trace, manifest_meta)
     diag_text = ("\n".join(diagnostic_lines) + "\n") if diagnostic_lines else ""
     ax_bev.text(
